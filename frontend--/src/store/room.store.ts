@@ -127,7 +127,28 @@ export const PALETTE_COLORS = [
   '#475569', '#1c2430', '#8A93A0', '#FFFFFF',
 ];
 
+export interface CanvasPage {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  backgroundColor?: string;
+}
+
+export const DEFAULT_PAGE: CanvasPage = {
+  id: 'page-1',
+  name: 'Page 1',
+  x: 0,
+  y: 0,
+  width: 1440,
+  height: 900,
+  backgroundColor: '#FFFFFF',
+};
+
 export const getRoomStorageKey = (roomId: string) => `canvas_shapes_${roomId}`;
+export const getRoomPagesStorageKey = (roomId: string) => `canvas_pages_${roomId}`;
 
 export const loadLocalRoomShapes = (roomId: string): CanvasShape[] => {
   try {
@@ -148,12 +169,33 @@ export const saveLocalRoomShapes = (roomId: string, shapes: CanvasShape[]): void
   }
 };
 
+export const loadLocalRoomPages = (roomId: string): CanvasPage[] => {
+  try {
+    const raw = localStorage.getItem(getRoomPagesStorageKey(roomId));
+    if (!raw) return [DEFAULT_PAGE];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : [DEFAULT_PAGE];
+  } catch {
+    return [DEFAULT_PAGE];
+  }
+};
+
+export const saveLocalRoomPages = (roomId: string, pages: CanvasPage[]): void => {
+  try {
+    localStorage.setItem(getRoomPagesStorageKey(roomId), JSON.stringify(pages));
+  } catch (e) {
+    console.error('Failed to persist room pages to localStorage', e);
+  }
+};
+
 interface RoomState {
   currentRoomId: string | null;
   activeRoom: Room | null;
   userRole: RoomRole | null;
   activeUsers: RoomUser[];
   shapes: CanvasShape[];
+  pages: CanvasPage[];
+  activePageId: string;
   isLoading: boolean;
   error: string | null;
   recentColors: string[];
@@ -182,15 +224,25 @@ interface RoomState {
   sendToBack: (id: string) => void;
   addRecentColor: (color: string) => void;
 
+  // Multi-Page Actions
+  addPage: (page?: Partial<CanvasPage>) => CanvasPage;
+  updatePage: (id: string, patch: Partial<CanvasPage>) => void;
+  removePage: (id: string) => void;
+  duplicatePage: (id: string) => CanvasPage | null;
+  setPages: (pages: CanvasPage[]) => void;
+  setActivePageId: (id: string) => void;
+
   resetRoomState: () => void;
 }
 
-export const useRoomStore = create<RoomState>((set) => ({
+export const useRoomStore = create<RoomState>((set, get) => ({
   currentRoomId: null,
   activeRoom: null,
   userRole: null,
   activeUsers: [],
   shapes: [],
+  pages: [DEFAULT_PAGE],
+  activePageId: 'page-1',
   isLoading: false,
   error: null,
   recentColors: [],
@@ -200,10 +252,13 @@ export const useRoomStore = create<RoomState>((set) => ({
       if (state.currentRoomId === roomId) {
         return state;
       }
-      const loaded = loadLocalRoomShapes(roomId);
+      const loadedShapes = loadLocalRoomShapes(roomId);
+      const loadedPages = loadLocalRoomPages(roomId);
       return {
         currentRoomId: roomId,
-        shapes: loaded,
+        shapes: loadedShapes,
+        pages: loadedPages,
+        activePageId: loadedPages[0]?.id || 'page-1',
         activeUsers: [],
         error: null,
       };
@@ -361,6 +416,101 @@ export const useRoomStore = create<RoomState>((set) => ({
       recentColors: [color, ...state.recentColors.filter((c) => c !== color)].slice(0, 12),
     })),
 
+  addPage: (pageOverride) => {
+    const state = get();
+    const count = state.pages.length;
+    // Position below the lowest page with a 120px gap
+    const maxY = state.pages.reduce((max, p) => Math.max(max, p.y + p.height), 0);
+    const nextY = count === 0 ? 0 : maxY + 120;
+    const newPage: CanvasPage = {
+      id: 'page-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
+      name: `Page ${count + 1}`,
+      x: 0,
+      y: nextY,
+      width: 1440,
+      height: 900,
+      backgroundColor: '#FFFFFF',
+      ...pageOverride,
+    };
+    const newPages = [...state.pages, newPage];
+    if (state.currentRoomId) saveLocalRoomPages(state.currentRoomId, newPages);
+    set({ pages: newPages, activePageId: newPage.id });
+    return newPage;
+  },
+
+  updatePage: (id, patch) =>
+    set((state) => {
+      const newPages = state.pages.map((p) => (p.id === id ? { ...p, ...patch } : p));
+      if (state.currentRoomId) saveLocalRoomPages(state.currentRoomId, newPages);
+      return { pages: newPages };
+    }),
+
+  removePage: (id) =>
+    set((state) => {
+      if (state.pages.length <= 1) return state; // Always keep at least 1 page
+      const newPages = state.pages.filter((p) => p.id !== id);
+      const nextActiveId = state.activePageId === id ? newPages[0]?.id || 'page-1' : state.activePageId;
+      if (state.currentRoomId) saveLocalRoomPages(state.currentRoomId, newPages);
+      return { pages: newPages, activePageId: nextActiveId };
+    }),
+
+  duplicatePage: (id) => {
+    const state = get();
+    const targetPage = state.pages.find((p) => p.id === id);
+    if (!targetPage) return null;
+
+    const maxY = state.pages.reduce((max, p) => Math.max(max, p.y + p.height), 0);
+    const nextY = maxY + 120;
+    const deltaY = nextY - targetPage.y;
+
+    const newPage: CanvasPage = {
+      id: 'page-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
+      name: `${targetPage.name} (Copy)`,
+      x: targetPage.x,
+      y: nextY,
+      width: targetPage.width,
+      height: targetPage.height,
+      backgroundColor: targetPage.backgroundColor || '#FFFFFF',
+    };
+
+    // Clone all shapes residing on the target page
+    const clonedShapes: CanvasShape[] = state.shapes
+      .filter((s) => {
+        const shapeY = 'y' in s ? s.y : 0;
+        return shapeY >= targetPage.y && shapeY < targetPage.y + targetPage.height;
+      })
+      .map((s) => {
+        const clonedId = 'shape-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
+        if (s.type === 'line') {
+          return { ...s, id: clonedId, y: s.y + deltaY, y2: s.y2 + deltaY };
+        }
+        return { ...s, id: clonedId, y: s.y + deltaY };
+      });
+
+    const newPages = [...state.pages, newPage];
+    const newShapes = [...state.shapes, ...clonedShapes];
+
+    if (state.currentRoomId) {
+      saveLocalRoomPages(state.currentRoomId, newPages);
+      saveLocalRoomShapes(state.currentRoomId, newShapes);
+    }
+
+    set({ pages: newPages, shapes: newShapes, activePageId: newPage.id });
+    return newPage;
+  },
+
+  setPages: (pages) =>
+    set((state) => {
+      const validPages = pages.length > 0 ? pages : [DEFAULT_PAGE];
+      if (state.currentRoomId) saveLocalRoomPages(state.currentRoomId, validPages);
+      return {
+        pages: validPages,
+        activePageId: validPages.some((p) => p.id === state.activePageId) ? state.activePageId : validPages[0].id,
+      };
+    }),
+
+  setActivePageId: (activePageId) => set({ activePageId }),
+
   resetRoomState: () =>
     set({
       currentRoomId: null,
@@ -368,6 +518,8 @@ export const useRoomStore = create<RoomState>((set) => ({
       userRole: null,
       activeUsers: [],
       shapes: [],
+      pages: [DEFAULT_PAGE],
+      activePageId: 'page-1',
       isLoading: false,
       error: null,
       recentColors: [],

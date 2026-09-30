@@ -11,3 +11,4 @@ bcrypt
 python-dotenv
 python-multipart
 websockets==17.0.1
+openai

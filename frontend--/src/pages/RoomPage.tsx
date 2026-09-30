@@ -8,6 +8,7 @@ import ProfileDrawer from '../components/ProfileDrawer';
 import {
   DEFAULT_APPEARANCE,
   useRoomStore,
+  type CanvasPage,
   type CanvasShape,
   type IconShape,
   type ImageShape,
@@ -56,17 +57,29 @@ function TabButton({ label, active, onClick }: { label: string; active: boolean;
 }
 
 interface CanvasOperation {
-  operation_type: 'CREATE' | 'UPDATE' | 'DELETE' | 'CLEAR' | 'REORDER';
+  operation_type:
+    | 'CREATE'
+    | 'UPDATE'
+    | 'DELETE'
+    | 'CLEAR'
+    | 'REORDER'
+    | 'PAGE_CREATE'
+    | 'PAGE_UPDATE'
+    | 'PAGE_DELETE'
+    | 'PAGE_REORDER'
+    | 'PAGES_SYNC';
   object?: CanvasShape;
   id?: string;
   shapes?: CanvasShape[];
+  page?: CanvasPage;
+  pages?: CanvasPage[];
 }
 
 type IncomingMessage =
   | { type: 'room_users'; users: RoomUser[] }
   | { type: 'user_joined'; user: RoomUser }
   | { type: 'user_left'; user_id: number }
-  | { type: 'room_state'; shapes: CanvasShape[] }
+  | { type: 'room_state'; shapes: CanvasShape[]; pages?: CanvasPage[] }
   | { type: 'canvas_operation'; operation: CanvasOperation };
 
 const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000';
@@ -80,8 +93,6 @@ const MAX_SCALE = 4;
 const GRID_SIZE = 40;
 const BOARD_WIDTH = 1440;
 const BOARD_HEIGHT = 900;
-const BOARD_X = 0;
-const BOARD_Y = 0;
 const DEFAULT_VIEW = { x: 80, y: 60, scale: 0.75 };
 
 // Converts a raw screen-space movement vector into the shape's own
@@ -158,6 +169,7 @@ function getUnionBBox(shapes: CanvasShape[]) {
 type DragMode =
   | { kind: 'draw'; shapeId: string; startX: number; startY: number }
   | { kind: 'move'; shapeId: string; startX: number; startY: number; origin: CanvasShape }
+  | { kind: 'movePage'; pageId: string; startX: number; startY: number; originPage: CanvasPage; originShapes: CanvasShape[] }
   | { kind: 'resize'; shapeId: string; handle: string; startX: number; startY: number; origin: CanvasShape }
   | { kind: 'rotate'; shapeId: string; centerX: number; centerY: number; startAngle: number; startRotation: number }
   | { kind: 'pan'; startClientX: number; startClientY: number; startViewX: number; startViewY: number };
@@ -198,7 +210,7 @@ export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { user } = useAuthStore();
-  const { openDrawer } = useSettingsStore();
+  const { openDrawer, theme } = useSettingsStore();
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -216,6 +228,7 @@ export default function RoomPage() {
   const [pendingIconId, setPendingIconId] = useState<string | null>(null);
   const [showIconLibrary, setShowIconLibrary] = useState(false);
   const [showShapesDropdown, setShowShapesDropdown] = useState(false);
+  const [showRoomMenu, setShowRoomMenu] = useState(false);
   const [showZoomMenu, setShowZoomMenu] = useState(false);
   // Infinite-canvas viewport: world-space origin offset (in screen px at
   // scale 1) plus the current zoom level. screenPoint = worldPoint*scale + {x,y}.
@@ -234,8 +247,9 @@ export default function RoomPage() {
   const [inviteResults, setInviteResults] = useState<any[]>([]);
   const [inviteDoneMsg, setInviteDoneMsg] = useState<string | null>(null);
 
-  // Left sidebar toggle (Figma style)
+  // Left & Right sidebar toggles (Figma style)
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
 
   // Toast notification for copying room ID
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -274,6 +288,8 @@ export default function RoomPage() {
   const {
     activeUsers,
     shapes,
+    pages,
+    activePageId,
     recentColors,
     initRoom,
     setActiveUsers,
@@ -290,6 +306,12 @@ export default function RoomPage() {
     bringForward,
     sendBackward,
     addRecentColor,
+    addPage,
+    updatePage,
+    removePage,
+    duplicatePage,
+    setPages,
+    setActivePageId,
   } = useRoomStore();
 
   // ----- Strict Room Isolation: Initialize store with roomId -----
@@ -368,6 +390,9 @@ export default function RoomPage() {
                 ws.send(JSON.stringify({ type: 'sync_canvas', room_id: roomId, shapes: currentRoomShapes }));
               }
             }
+            if (message.pages && message.pages.length > 0) {
+              setPages(message.pages);
+            }
             break;
           }
           case 'canvas_operation': {
@@ -382,6 +407,14 @@ export default function RoomPage() {
               clearShapes();
             } else if (op.operation_type === 'REORDER' && op.shapes) {
               setShapes(op.shapes);
+            } else if (op.operation_type === 'PAGE_CREATE' && op.page) {
+              addPage(op.page);
+            } else if (op.operation_type === 'PAGE_UPDATE' && op.page) {
+              updatePage(op.page.id, op.page);
+            } else if (op.operation_type === 'PAGE_DELETE' && op.id) {
+              removePage(op.id);
+            } else if ((op.operation_type === 'PAGE_REORDER' || op.operation_type === 'PAGES_SYNC') && op.pages) {
+              setPages(op.pages);
             }
             break;
           }
@@ -479,6 +512,93 @@ export default function RoomPage() {
         shapes: currentShapes,
       });
     }, 0);
+  };
+
+  // ----- Multi-Page Canvas Management -----
+  const handleAddPage = () => {
+    const newPage = addPage();
+    sendCanvasOperation({
+      operation_type: 'PAGE_CREATE',
+      page: newPage,
+    });
+    setTimeout(() => {
+      fitToPage(newPage.id);
+    }, 60);
+  };
+
+  const handleDuplicatePage = (pageId: string) => {
+    const newPage = duplicatePage(pageId);
+    if (newPage) {
+      sendCanvasOperation({
+        operation_type: 'PAGE_CREATE',
+        page: newPage,
+      });
+      const currentShapes = useRoomStore.getState().shapes;
+      sendCanvasOperation({
+        operation_type: 'REORDER',
+        shapes: currentShapes,
+      });
+      setTimeout(() => {
+        fitToPage(newPage.id);
+      }, 60);
+    }
+  };
+
+  const handleDeletePage = (pageId: string) => {
+    if (pages.length <= 1) return;
+    removePage(pageId);
+    sendCanvasOperation({
+      operation_type: 'PAGE_DELETE',
+      id: pageId,
+    });
+  };
+
+  const handleRenamePage = (pageId: string, name: string) => {
+    updatePage(pageId, { name });
+    const target = pages.find((p) => p.id === pageId);
+    if (target) {
+      sendCanvasOperation({
+        operation_type: 'PAGE_UPDATE',
+        page: { ...target, name },
+      });
+    }
+  };
+
+  const fitToPage = (pageId?: string) => {
+    const targetId = pageId || activePageId;
+    const targetPage = pages.find((p) => p.id === targetId) || pages[0] || { x: 0, y: 0, width: 1440, height: 900 };
+    if (!targetPage) return;
+
+    setActivePageId(targetPage.id);
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const rect = svg.getBoundingClientRect();
+    const pad = 80;
+    const availW = Math.max(300, rect.width - pad * 2);
+    const availH = Math.max(300, rect.height - pad * 2);
+    const scale = Math.min(availW / targetPage.width, availH / targetPage.height, 1.0);
+    const x = (rect.width - targetPage.width * scale) / 2 - targetPage.x * scale;
+    const y = (rect.height - targetPage.height * scale) / 2 - targetPage.y * scale;
+
+    setView({
+      x: Math.round(x),
+      y: Math.round(y),
+      scale: Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.round(scale * 100) / 100)),
+    });
+    setShowZoomMenu(false);
+  };
+
+  const activePageIndex = Math.max(0, pages.findIndex((p) => p.id === activePageId));
+  const goToPrevPage = () => {
+    if (activePageIndex > 0) {
+      fitToPage(pages[activePageIndex - 1].id);
+    }
+  };
+  const goToNextPage = () => {
+    if (activePageIndex < pages.length - 1) {
+      fitToPage(pages[activePageIndex + 1].id);
+    }
   };
 
   // ----- Collaborator management (owner only) -----
@@ -680,24 +800,7 @@ export default function RoomPage() {
   };
 
   const fitToScreen = () => {
-    const svg = svgRef.current;
-    if (!svg) {
-      setView(DEFAULT_VIEW);
-      return;
-    }
-    const rect = svg.getBoundingClientRect();
-    const pad = 60;
-    const availW = Math.max(300, rect.width - pad * 2);
-    const availH = Math.max(300, rect.height - pad * 2);
-    const scale = Math.min(availW / BOARD_WIDTH, availH / BOARD_HEIGHT, 1.0);
-    const x = (rect.width - BOARD_WIDTH * scale) / 2;
-    const y = (rect.height - BOARD_HEIGHT * scale) / 2;
-    setView({
-      x: Math.round(x),
-      y: Math.round(y),
-      scale: Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.round(scale * 100) / 100)),
-    });
-    setShowZoomMenu(false);
+    fitToPage(activePageId);
   };
 
   const zoomToScale = (targetScale: number) => {
@@ -743,8 +846,16 @@ export default function RoomPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       fitToScreen();
-    }, 60);
+    }, 80);
     return () => clearTimeout(timer);
+  }, [leftSidebarOpen]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      fitToScreen();
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   // ----- Space key handler for Pan tool -----
@@ -903,6 +1014,7 @@ export default function RoomPage() {
         setSelectedTool('select');
         setShowShapesDropdown(false);
         setShowIconLibrary(false);
+        setShowRoomMenu(false);
         setShowZoomMenu(false);
         setShowShortcutsModal(false);
       } else if (e.key === '?' || (e.shiftKey && e.key === '/')) {
@@ -1057,6 +1169,37 @@ export default function RoomPage() {
     (e.target as Element).setPointerCapture(e.pointerId);
   };
 
+  // ----- Selecting / moving an existing page / artboard -----
+  const handlePagePointerDown = (e: React.PointerEvent, page: CanvasPage) => {
+    if (isSpacePressed || e.button === 1) return;
+    e.stopPropagation();
+    setActivePageId(page.id);
+    setSelectedShapeId(null);
+
+    if (selectedTool !== 'select') return;
+
+    const { x, y } = getPoint(e);
+
+    // Find all shapes positioned within or overlapping this page
+    const pageShapes = shapes.filter(
+      (s) =>
+        s.x >= page.x - 30 &&
+        s.x <= page.x + page.width + 30 &&
+        s.y >= page.y - 30 &&
+        s.y <= page.y + page.height + 30
+    );
+
+    dragRef.current = {
+      kind: 'movePage',
+      pageId: page.id,
+      startX: x,
+      startY: y,
+      originPage: { ...page },
+      originShapes: pageShapes.map((s) => ({ ...s })),
+    };
+    (e.target as Element).setPointerCapture(e.pointerId);
+  };
+
   // ----- Selecting / moving an existing shape -----
   const handleShapePointerDown = (e: React.PointerEvent, shape: CanvasShape) => {
     if (shape.hidden) return;
@@ -1094,7 +1237,7 @@ export default function RoomPage() {
     (e.target as Element).setPointerCapture(e.pointerId);
   };
 
-  // ----- Drag handling shared across draw / move / resize / rotate -----
+  // ----- Drag handling shared across draw / move / resize / rotate / movePage -----
   const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const drag = dragRef.current;
     if (!drag) return;
@@ -1107,6 +1250,33 @@ export default function RoomPage() {
     }
 
     const { x, y } = getPoint(e);
+
+    if (drag.kind === 'movePage') {
+      const dx = Math.round(x - drag.startX);
+      const dy = Math.round(y - drag.startY);
+      const newX = drag.originPage.x + dx;
+      const newY = drag.originPage.y + dy;
+
+      updatePage(drag.pageId, { x: newX, y: newY });
+
+      // Move shapes belonging to the page together in sync
+      for (const originShape of drag.originShapes) {
+        if (originShape.type === 'line') {
+          updateShape(originShape.id, {
+            x: originShape.x + dx,
+            y: originShape.y + dy,
+            x2: originShape.x2 + dx,
+            y2: originShape.y2 + dy,
+          });
+        } else {
+          updateShape(originShape.id, {
+            x: originShape.x + dx,
+            y: originShape.y + dy,
+          });
+        }
+      }
+      return;
+    }
 
     if (drag.kind === 'draw') {
       const shape = shapes.find((s) => s.id === drag.shapeId);
@@ -1201,6 +1371,25 @@ export default function RoomPage() {
     const drag = dragRef.current;
     if (!drag) return;
     dragRef.current = null;
+
+    if (drag.kind === 'movePage') {
+      const pageId = drag.pageId;
+      const finalPage = useRoomStore.getState().pages.find((p) => p.id === pageId);
+      if (finalPage) {
+        sendCanvasOperation({
+          operation_type: 'PAGE_UPDATE',
+          page: finalPage,
+        });
+      }
+      if (drag.originShapes.length > 0) {
+        const currentShapes = useRoomStore.getState().shapes;
+        sendCanvasOperation({
+          operation_type: 'REORDER',
+          shapes: currentShapes,
+        });
+      }
+      return;
+    }
 
     const shapeId = 'shapeId' in drag ? drag.shapeId : undefined;
     const finalShape = shapes.find((s) => s.id === shapeId);
@@ -1684,11 +1873,16 @@ export default function RoomPage() {
     const cell = GRID_SIZE * view.scale;
     const offsetX = ((view.x % cell) + cell) % cell;
     const offsetY = ((view.y % cell) + cell) % cell;
+    const isLight =
+      theme === 'light' ||
+      (theme === 'system' && typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: light)').matches);
+    const dotFill = isLight ? 'rgba(0, 0, 0, 0.14)' : 'rgba(255, 255, 255, 0.12)';
+
     return (
       <>
         <defs>
           <pattern id="cs-grid-dots" width={cell} height={cell} patternUnits="userSpaceOnUse" x={offsetX} y={offsetY}>
-            <circle cx={1} cy={1} r={Math.min(1.4, 1 * view.scale + 0.4)} fill="rgba(255, 255, 255, 0.12)" />
+            <circle cx={1} cy={1} r={Math.min(1.4, 1 * view.scale + 0.4)} fill={dotFill} />
           </pattern>
         </defs>
         <rect x={0} y={0} width="100%" height="100%" fill="url(#cs-grid-dots)" />
@@ -1766,30 +1960,77 @@ export default function RoomPage() {
 
           <div className="cs-header-vert-divider" />
 
-          <div className="cs-room-title-block">
-            <div className="cs-room-title-row">
-              <h2 className="cs-room-name">
-                {isPersonalWorkspace ? 'Personal Workspace' : 'Collaborative Board'}
-              </h2>
-              <span className={`cs-room-type-tag ${isPersonalWorkspace ? 'tag-personal' : 'tag-collab'}`}>
-                {isPersonalWorkspace ? 'Draft' : 'Live Room'}
-              </span>
-            </div>
-            {isPersonalWorkspace ? (
-              <span className="cs-room-privacy-note">Private Studio · Only you</span>
-            ) : (
-              <button
-                type="button"
-                className="cs-room-id-glass-chip"
-                onClick={handleCopyRoomId}
-                title={`Click to copy Room ID (${roomId})`}
-              >
-                <span>Room ID: {roomId ? `${roomId.slice(0, 8)}…` : ''}</span>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          <div className="cs-room-title-wrapper" style={{ position: 'relative' }}>
+            <button
+              type="button"
+              className={`cs-room-title-trigger ${showRoomMenu ? 'is-active' : ''}`}
+              onClick={() => setShowRoomMenu((v) => !v)}
+              title="Board options & Room details"
+            >
+              <div className="cs-room-title-row">
+                <span className={`cs-title-dot ${isPersonalWorkspace ? 'dot-personal' : 'dot-collab'}`} />
+                <h2 className="cs-room-name">
+                  {isPersonalWorkspace ? 'Personal Workspace' : 'Collaborative Board'}
+                </h2>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="cs-chevron-icon">
+                  <polyline points="6 9 12 15 18 9" />
                 </svg>
-              </button>
+              </div>
+            </button>
+
+            {showRoomMenu && (
+              <div className="cs-room-meta-dropdown" onClick={(e) => e.stopPropagation()}>
+                <div className="cs-dropdown-section-title">Board Overview</div>
+                <div className="cs-room-meta-row">
+                  <span className="cs-meta-label">Workspace:</span>
+                  <span className="cs-meta-value">{isPersonalWorkspace ? 'Personal Workspace' : 'Collaborative Live Room'}</span>
+                </div>
+                {!isPersonalWorkspace && roomId && (
+                  <div className="cs-room-meta-row" style={{ marginTop: 8 }}>
+                    <span className="cs-meta-label">Room ID:</span>
+                    <div className="cs-room-id-chip-row">
+                      <code className="cs-room-id-code">{roomId.length > 16 ? `${roomId.slice(0, 14)}…` : roomId}</code>
+                      <button
+                        type="button"
+                        className="cs-copy-id-btn"
+                        onClick={() => {
+                          handleCopyRoomId();
+                        }}
+                        title="Copy full Room ID"
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                        </svg>
+                        <span>Copy ID</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div className="cs-menu-divider" />
+                {!isPersonalWorkspace ? (
+                  <button
+                    type="button"
+                    className="cs-dropdown-action-item"
+                    onClick={() => {
+                      setRightTab('room');
+                      setShowRoomMenu(false);
+                    }}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                      <circle cx="8.5" cy="7" r="4" />
+                      <line x1="20" y1="8" x2="20" y2="14" />
+                      <line x1="23" y1="11" x2="17" y2="11" />
+                    </svg>
+                    <span>Manage Collaborators ({activeUsers.length + members.length})</span>
+                  </button>
+                ) : (
+                  <div className="cs-dropdown-note">
+                    🔒 Private Studio · Only you can view this board.
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -1897,38 +2138,22 @@ export default function RoomPage() {
             )}
           </div>
 
-          {/* 7. Full Icons & Stickers Library Big Drawer */}
-          <div style={{ position: 'relative' }}>
-            <button
-              className={`cs-tool-item ${showIconLibrary ? 'is-active' : ''}`}
-              title="Full Stickers & Shapes Library (I)"
-              onClick={() => {
-                setShowIconLibrary((v) => !v);
-                setShowShapesDropdown(false);
-              }}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="7" height="7" />
-                <rect x="14" y="3" width="7" height="7" />
-                <rect x="14" y="14" width="7" height="7" />
-                <rect x="3" y="14" width="7" height="7" />
-              </svg>
-            </button>
-            {showIconLibrary && (
-              <div className="cs-library-popover-wrapper">
-                <IconLibraryPanel
-                  recentIconIds={recentIconIds}
-                  onPick={(icon: IconDef) => {
-                    setPendingIconId(icon.id);
-                    setSelectedTool('icon');
-                    setShowIconLibrary(false);
-                    setRecentIconIds((prev) => [icon.id, ...prev.filter((id) => id !== icon.id)].slice(0, 12));
-                  }}
-                  onClose={() => setShowIconLibrary(false)}
-                />
-              </div>
-            )}
-          </div>
+          {/* 7. Full Icons & Stickers Library Trigger */}
+          <button
+            className={`cs-tool-item ${showIconLibrary ? 'is-active' : ''}`}
+            title="Full Stickers & Shapes Library (I)"
+            onClick={() => {
+              setShowIconLibrary(true);
+              setShowShapesDropdown(false);
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="7" height="7" />
+              <rect x="14" y="3" width="7" height="7" />
+              <rect x="14" y="14" width="7" height="7" />
+              <rect x="3" y="14" width="7" height="7" />
+            </svg>
+          </button>
 
           <span className="cs-dock-divider" />
 
@@ -2061,6 +2286,20 @@ export default function RoomPage() {
             <span>{connected ? 'Live' : 'Offline'}</span>
           </div>
 
+          {/* Toggle Properties/Room Panel button */}
+          <button
+            type="button"
+            className={`cs-room-nav-btn ${rightSidebarOpen ? 'is-active' : ''}`}
+            onClick={() => setRightSidebarOpen((v) => !v)}
+            title="Toggle Properties & Design Panel"
+            aria-label="Toggle Properties & Design Panel"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <line x1="15" y1="3" x2="15" y2="21" />
+            </svg>
+          </button>
+
           {/* User Profile & Settings Drawer Trigger */}
           <button
             type="button"
@@ -2078,21 +2317,27 @@ export default function RoomPage() {
       </header>
 
       <div className="cs-room-body">
-        {/* Left Layers Sidebar — Collapsible (Figma style) */}
-        {leftSidebarOpen && (
-          <LayersPanel
-            shapes={shapes}
-            selectedShapeId={selectedShapeId}
-            onSelectShape={(id) => setSelectedShapeId(id)}
-            onDeleteShape={(id) => deleteLayer(id)}
-            onRenameShape={handleRenameLayer}
-            onToggleVisibility={handleToggleVisibility}
-            onToggleLock={handleToggleLock}
-            onBringForward={handleBringForward}
-            onSendBackward={handleSendBackward}
-            onCollapse={() => setLeftSidebarOpen(false)}
-          />
-        )}
+        {/* Left Layers Sidebar — Smoothly Animated (Figma style) */}
+        <LayersPanel
+          isOpen={leftSidebarOpen}
+          shapes={shapes}
+          pages={pages}
+          activePageId={activePageId}
+          selectedShapeId={selectedShapeId}
+          onSelectShape={(id) => setSelectedShapeId(id)}
+          onDeleteShape={(id) => deleteLayer(id)}
+          onRenameShape={handleRenameLayer}
+          onToggleVisibility={handleToggleVisibility}
+          onToggleLock={handleToggleLock}
+          onBringForward={handleBringForward}
+          onSendBackward={handleSendBackward}
+          onCollapse={() => setLeftSidebarOpen(false)}
+          onAddPage={handleAddPage}
+          onDuplicatePage={handleDuplicatePage}
+          onDeletePage={handleDeletePage}
+          onRenamePage={handleRenamePage}
+          onFocusPage={(pageId) => fitToPage(pageId)}
+        />
 
         {/* Canvas Area */}
         <main className="cs-room-canvas-area">
@@ -2116,12 +2361,12 @@ export default function RoomPage() {
           >
             {/* Global SVG defs for artboard shadows and subtle grids */}
             <defs>
-              <filter id="cs-board-shadow" x="-20%" y="-20%" width="140%" height="140%">
-                <feDropShadow dx="0" dy="24" stdDeviation="36" floodColor="#000000" floodOpacity="0.65" />
-                <feDropShadow dx="0" dy="6" stdDeviation="12" floodColor="#000000" floodOpacity="0.4" />
+              <filter id="cs-board-shadow" x="-30%" y="-30%" width="160%" height="160%">
+                <feDropShadow dx="0" dy="20" stdDeviation="32" floodColor="#000000" floodOpacity="0.55" />
+                <feDropShadow dx="0" dy="4" stdDeviation="10" floodColor="#000000" floodOpacity="0.3" />
               </filter>
               <pattern id="cs-paper-grid" width="28" height="28" patternUnits="userSpaceOnUse">
-                <circle cx="14" cy="14" r="1.2" fill="#E2E8F0" />
+                <circle cx="14" cy="14" r="1.1" fill="#E2E8F0" />
               </pattern>
             </defs>
 
@@ -2132,64 +2377,215 @@ export default function RoomPage() {
             <g transform={`translate(${view.x} ${view.y}) scale(${view.scale})`}>
               {renderFilterDefs()}
 
-              {/* Whiteboard Artboard Label Tag */}
-              <g transform={`translate(${BOARD_X}, ${BOARD_Y - 14})`}>
-                <text
-                  fill="#94A3B8"
-                  fontSize={12}
-                  fontWeight={600}
-                  letterSpacing="0.05em"
-                  style={{ userSelect: 'none' }}
-                >
-                  Canva Document Canvas • {BOARD_WIDTH} × {BOARD_HEIGHT} px
-                </text>
-              </g>
+              {/* Render Every Page / Artboard on the Infinite Canvas */}
+              {pages.map((page, pageIdx) => {
+                const isActive = page.id === activePageId;
+                const isDraggingThisPage = dragRef.current?.kind === 'movePage' && (dragRef.current as any).pageId === page.id;
+                const headerWidth = Math.min(page.width, 400);
 
-              {/* Canva Whiteboard Paper Surface */}
-              <rect
-                x={BOARD_X}
-                y={BOARD_Y}
-                width={BOARD_WIDTH}
-                height={BOARD_HEIGHT}
-                rx={10}
-                fill="#FFFFFF"
-                filter="url(#cs-board-shadow)"
-              />
-              {/* Subtle paper dot grid inside whiteboard */}
-              <rect
-                x={BOARD_X}
-                y={BOARD_Y}
-                width={BOARD_WIDTH}
-                height={BOARD_HEIGHT}
-                rx={10}
-                fill="url(#cs-paper-grid)"
-                pointerEvents="none"
-              />
+                return (
+                  <g key={page.id} className={`cs-canvas-page-artboard-group ${isActive ? 'is-active-artboard' : ''}`}>
+                    {/* Draggable Figma/Canva Style Artboard Header Bar */}
+                    <g
+                      transform={`translate(${page.x}, ${page.y - 44})`}
+                      className="cs-canvas-page-header"
+                      style={{ cursor: isDraggingThisPage ? 'grabbing' : 'grab' }}
+                      onPointerDown={(e) => handlePagePointerDown(e, page)}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        fitToPage(page.id);
+                      }}
+                    >
+                      {/* Header pill background */}
+                      <rect
+                        x={0}
+                        y={0}
+                        width={headerWidth}
+                        height={34}
+                        rx={8}
+                        fill={isActive ? '#1E2235' : '#121622'}
+                        stroke={isActive ? '#6366F1' : '#272E44'}
+                        strokeWidth={isActive ? 1.5 : 1}
+                        style={{ filter: 'drop-shadow(0 4px 10px rgba(0, 0, 0, 0.4))' }}
+                      />
+
+                      {/* 6-dot Drag grip handle */}
+                      <g fill={isActive ? '#818CF8' : '#64748B'} transform="translate(10, 8)">
+                        <circle cx="2" cy="3" r="1.5" />
+                        <circle cx="2" cy="9" r="1.5" />
+                        <circle cx="2" cy="15" r="1.5" />
+                        <circle cx="7" cy="3" r="1.5" />
+                        <circle cx="7" cy="9" r="1.5" />
+                        <circle cx="7" cy="15" r="1.5" />
+                      </g>
+
+                      {/* Page Title & Number */}
+                      <text
+                        x={28}
+                        y={21}
+                        fill={isActive ? '#FFFFFF' : '#CBD5E1'}
+                        fontSize={12.5}
+                        fontWeight={700}
+                        fontFamily="system-ui, -apple-system, sans-serif"
+                        style={{ userSelect: 'none', pointerEvents: 'none' }}
+                      >
+                        Page {pageIdx + 1}: {page.name || `Page ${pageIdx + 1}`}
+                      </text>
+
+                      {/* Drag Hint & Dimensions */}
+                      <text
+                        x={headerWidth - 12}
+                        y={21}
+                        textAnchor="end"
+                        fill={isActive ? '#818CF8' : '#64748B'}
+                        fontSize={11}
+                        fontWeight={600}
+                        fontFamily="system-ui, -apple-system, sans-serif"
+                        style={{ userSelect: 'none', pointerEvents: 'none' }}
+                      >
+                        {page.width} × {page.height} px • ⠿ Move
+                      </text>
+                    </g>
+
+                    {/* Canva Whiteboard Paper Surface with realistic soft shadow */}
+                    <rect
+                      x={page.x}
+                      y={page.y}
+                      width={page.width}
+                      height={page.height}
+                      rx={10}
+                      fill={page.backgroundColor || '#FFFFFF'}
+                      stroke={isActive ? '#6366F1' : 'rgba(0, 0, 0, 0.12)'}
+                      strokeWidth={isActive ? 2.5 : 1}
+                      filter="url(#cs-board-shadow)"
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => setActivePageId(page.id)}
+                    />
+                    {/* Subtle paper dot grid inside whiteboard */}
+                    <rect
+                      x={page.x}
+                      y={page.y}
+                      width={page.width}
+                      height={page.height}
+                      rx={10}
+                      fill="url(#cs-paper-grid)"
+                      pointerEvents="none"
+                    />
+                  </g>
+                );
+              })}
 
               {/* Shapes & Objects */}
               {shapes.map(renderShape)}
             </g>
           </svg>
 
-          {/* Canvas Viewport shortcut HUD */}
+          {/* Floating Canva Multi-Page Management Dock */}
+          <div className="cs-pages-nav-dock">
+            <button
+              type="button"
+              className="cs-page-nav-btn"
+              disabled={activePageIndex <= 0}
+              onClick={goToPrevPage}
+              title="Previous Page"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </button>
+
+            <div className="cs-page-indicator-pill" title="Active Page">
+              <span>Page <strong>{activePageIndex + 1}</strong> of {pages.length}</span>
+            </div>
+
+            <button
+              type="button"
+              className="cs-page-nav-btn"
+              disabled={activePageIndex >= pages.length - 1}
+              onClick={goToNextPage}
+              title="Next Page"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+
+            <div className="cs-page-nav-divider" />
+
+            <button
+              type="button"
+              className="cs-add-page-pill-btn"
+              onClick={handleAddPage}
+              title="Add a new page artboard (+)"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+              <span>Add Page</span>
+            </button>
+
+            <button
+              type="button"
+              className="cs-page-dock-icon-btn"
+              onClick={() => handleDuplicatePage(activePageId)}
+              title="Duplicate current page"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
+
+            {pages.length > 1 && (
+              <button
+                type="button"
+                className="cs-page-dock-icon-btn is-danger"
+                onClick={() => handleDeletePage(activePageId)}
+                title="Delete current page"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </button>
+            )}
+          </div>
+
+          {/* Compact Canvas Viewport shortcut HUD */}
           <div className="cs-canvas-hud-left">
-            <span><strong>Space + Drag</strong> to pan</span>
+            <span><strong>Space + Drag</strong> pan</span>
             <span className="cs-hud-sep">•</span>
-            <span><strong>Scroll</strong> to zoom</span>
+            <span><strong>Scroll</strong> zoom</span>
             <span className="cs-hud-sep">•</span>
-            <span><strong>Ctrl+0</strong> to fit</span>
+            <span><strong>Ctrl+0</strong> fit</span>
             <span className="cs-hud-sep">•</span>
             <button
               type="button"
               className="cs-hud-shortcuts-btn"
               onClick={() => setShowShortcutsModal(true)}
-              title="View all Keyboard Shortcuts (?)"
+              title="View Keyboard Shortcuts (?)"
             >
-              Shortcuts <strong>?</strong>
+              <span>Shortcuts</span>
+              <kbd>?</kbd>
             </button>
-            <span className="cs-hud-sep">•</span>
-            <span style={{ color: '#34D399' }}>60 FPS Sync</span>
           </div>
+
+          {/* Full Icons & Stickers Library Modal with Backdrop */}
+          {showIconLibrary && (
+            <div className="cs-modal-backdrop" onClick={() => setShowIconLibrary(false)}>
+              <IconLibraryPanel
+                recentIconIds={recentIconIds}
+                onPick={(icon: IconDef) => {
+                  setPendingIconId(icon.id);
+                  setSelectedTool('icon');
+                  setShowIconLibrary(false);
+                  setRecentIconIds((prev) => [icon.id, ...prev.filter((id) => id !== icon.id)].slice(0, 12));
+                }}
+                onClose={() => setShowIconLibrary(false)}
+              />
+            </div>
+          )}
 
           {/* Keyboard Shortcuts Cheat Sheet Modal */}
           {showShortcutsModal && (
@@ -2247,119 +2643,160 @@ export default function RoomPage() {
               </div>
             </div>
           )}
+          {/* Floating Reopen Toggle for Left Sidebar */}
+          <button
+            type="button"
+            className={`cs-floating-edge-pill is-left ${!leftSidebarOpen ? 'is-visible' : ''}`}
+            onClick={() => setLeftSidebarOpen(true)}
+            title="Open Pages & Layers (L)"
+            aria-label="Open Pages & Layers"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+            <span>Layers</span>
+          </button>
+
+          {/* Floating Reopen Toggle for Right Sidebar */}
+          <button
+            type="button"
+            className={`cs-floating-edge-pill is-right ${!rightSidebarOpen ? 'is-visible' : ''}`}
+            onClick={() => setRightSidebarOpen(true)}
+            title="Open Design & Properties"
+            aria-label="Open Design & Properties"
+          >
+            <span>Design</span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+          </button>
         </main>
 
-        {/* Right Design & Room Panel */}
-        <aside className="cs-room-props-sidebar">
-          <div className="cs-props-tabs-header">
-            <TabButton label="Design" active={rightTab === 'design'} onClick={() => setRightTab('design')} />
-            <TabButton
-              label={`Room${activeUsers.length > 0 ? ` (${activeUsers.length})` : ''}`}
-              active={rightTab === 'room'}
-              onClick={() => setRightTab('room')}
-            />
-          </div>
-
-          <div className="cs-props-scroll-body">
-            {rightTab === 'design' ? (
-              <PropertiesPanel
-                shape={selectedShape}
-                recentColors={recentColors}
-                onChange={handlePropertiesChange}
-                onUseColor={addRecentColor}
-                onExportSelectionPNG={exportSelectionPNG}
-                onExportSelectionSVG={exportSelectionSVG}
-                onExportCanvasPNG={exportCanvasPNG}
+        {/* Right Design & Room Panel — Smoothly Animated */}
+        <aside className={`cs-room-props-sidebar ${!rightSidebarOpen ? 'is-collapsed' : ''}`} aria-hidden={!rightSidebarOpen}>
+          <div className="cs-props-sidebar-inner">
+            <div className="cs-props-tabs-header">
+              <TabButton label="Design" active={rightTab === 'design'} onClick={() => setRightTab('design')} />
+              <TabButton
+                label={`Room${activeUsers.length > 0 ? ` (${activeUsers.length})` : ''}`}
+                active={rightTab === 'room'}
+                onClick={() => setRightTab('room')}
               />
-            ) : (
-              <div style={{ padding: '16px 14px' }}>
-                {isPersonalWorkspace ? (
-                  <p className="cs-empty-inline">
-                    This is your private workspace draft. No one else can see or access it.
-                  </p>
-                ) : accessError && !connected ? (
-                  <div className="cs-error">{accessError}</div>
-                ) : isOwner ? (
-                  <div>
-                    <p className="cs-empty-inline" style={{ marginBottom: 14 }}>
-                      You own this room. Invite teammates below to grant edit access.
-                    </p>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                      <input
-                        type="text"
-                        value={inviteQuery}
-                        onChange={(e) => handleInviteSearch(e.target.value)}
-                        placeholder="Search by username or email…"
-                        aria-label="Invite user"
-                        className="cs-room-invite-input"
-                      />
-                      {inviteResults.length > 0 && (
-                        <div className="cs-invite-results-box">
-                          {inviteResults.map((r) => (
-                            <div key={r.user_id} className="cs-invite-result-row">
-                              <span style={{ minWidth: 0 }}>
-                                <strong style={{ color: '#FFFFFF' }}>{r.username}</strong>
-                                <span style={{ color: '#94A3B8', display: 'block', fontSize: 11 }}>
-                                  {r.email}
-                                </span>
-                              </span>
-                              <button className="cs-bento-primary-btn" style={{ padding: '4px 12px', fontSize: 11 }} onClick={() => grantAccess(r.user_id)}>
-                                Invite
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {inviteDoneMsg && <div className="cs-error" style={{ margin: 0 }}>{inviteDoneMsg}</div>}
-                    </div>
+              <button
+                type="button"
+                className="cs-room-nav-btn"
+                style={{ width: 26, height: 26, margin: '8px 10px 8px auto', padding: 0 }}
+                onClick={() => setRightSidebarOpen(false)}
+                title="Collapse properties panel"
+                aria-label="Collapse properties panel"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+              </button>
+            </div>
 
-                    <div style={{ marginTop: 20 }}>
-                      <div className="cs-props-group-label">
-                        Invited Collaborators ({members.length})
-                      </div>
-                      {members.length === 0 ? (
-                        <p className="cs-empty-inline">No collaborators added yet.</p>
-                      ) : (
-                        members.map((m) => (
-                          <div key={m.user_id} className="cs-user-row">
-                            <span className="cs-live-dot" />
-                            <span style={{ flex: '1 1 auto', minWidth: 0, color: '#E2E8F0', fontSize: 12 }}>
-                              {m.username || m.email}
-                            </span>
-                            {m.user_id !== user?.user_id && (
-                              <button
-                                className="cs-layer-delete-btn"
-                                style={{
-                                  padding: '2px 8px',
-                                  fontSize: 10,
-                                  background: 'rgba(239, 68, 68, 0.15)',
-                                  color: '#F87171',
-                                  border: '1px solid rgba(239, 68, 68, 0.3)',
-                                  borderRadius: 4,
-                                  cursor: 'pointer',
-                                }}
-                                onClick={() => revokeAccess(m.user_id)}
-                              >
-                                Remove
-                              </button>
-                            )}
+            <div className="cs-props-scroll-body">
+              {rightTab === 'design' ? (
+                <PropertiesPanel
+                  shape={selectedShape}
+                  recentColors={recentColors}
+                  onChange={handlePropertiesChange}
+                  onUseColor={addRecentColor}
+                  onExportSelectionPNG={exportSelectionPNG}
+                  onExportSelectionSVG={exportSelectionSVG}
+                  onExportCanvasPNG={exportCanvasPNG}
+                />
+              ) : (
+                <div style={{ padding: '16px 14px' }}>
+                  {isPersonalWorkspace ? (
+                    <p className="cs-empty-inline">
+                      This is your private workspace draft. No one else can see or access it.
+                    </p>
+                  ) : accessError && !connected ? (
+                    <div className="cs-error">{accessError}</div>
+                  ) : isOwner ? (
+                    <div>
+                      <p className="cs-empty-inline" style={{ marginBottom: 14 }}>
+                        You own this room. Invite teammates below to grant edit access.
+                      </p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <input
+                          type="text"
+                          value={inviteQuery}
+                          onChange={(e) => handleInviteSearch(e.target.value)}
+                          placeholder="Search by username or email…"
+                          aria-label="Invite user"
+                          className="cs-room-invite-input"
+                        />
+                        {inviteResults.length > 0 && (
+                          <div className="cs-invite-results-box">
+                            {inviteResults.map((r) => (
+                              <div key={r.user_id} className="cs-invite-result-row">
+                                <span style={{ minWidth: 0 }}>
+                                  <strong style={{ color: '#FFFFFF' }}>{r.username}</strong>
+                                  <span style={{ color: '#94A3B8', display: 'block', fontSize: 11 }}>
+                                    {r.email}
+                                  </span>
+                                </span>
+                                <button className="cs-bento-primary-btn" style={{ padding: '4px 12px', fontSize: 11 }} onClick={() => grantAccess(r.user_id)}>
+                                  Invite
+                                </button>
+                              </div>
+                            ))}
                           </div>
-                        ))
-                      )}
+                        )}
+                        {inviteDoneMsg && <div className="cs-error" style={{ margin: 0 }}>{inviteDoneMsg}</div>}
+                      </div>
+
+                      <div style={{ marginTop: 20 }}>
+                        <div className="cs-props-group-label">
+                          Invited Collaborators ({members.length})
+                        </div>
+                        {members.length === 0 ? (
+                          <p className="cs-empty-inline">No collaborators added yet.</p>
+                        ) : (
+                          members.map((m) => (
+                            <div key={m.user_id} className="cs-user-row">
+                              <span className="cs-live-dot" />
+                              <span style={{ flex: '1 1 auto', minWidth: 0, color: '#E2E8F0', fontSize: 12 }}>
+                                {m.username || m.email}
+                              </span>
+                              {m.user_id !== user?.user_id && (
+                                <button
+                                  className="cs-layer-delete-btn"
+                                  style={{
+                                    padding: '2px 8px',
+                                    fontSize: 10,
+                                    background: 'rgba(239, 68, 68, 0.15)',
+                                    color: '#F87171',
+                                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                                    borderRadius: 4,
+                                    cursor: 'pointer',
+                                  }}
+                                  onClick={() => revokeAccess(m.user_id)}
+                                >
+                                  Remove
+                                </button>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ) : activeUsers.length === 0 ? (
-                  <p className="cs-empty-inline">No other teammates active</p>
-                ) : (
-                  activeUsers.map((user) => (
-                    <div key={user.user_id} className="cs-user-row">
-                      <span className="cs-live-dot" />
-                      <span style={{ color: '#E2E8F0', fontSize: 12 }}>{user.username || user.email}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
+                  ) : activeUsers.length === 0 ? (
+                    <p className="cs-empty-inline">No other teammates active</p>
+                  ) : (
+                    activeUsers.map((user) => (
+                      <div key={user.user_id} className="cs-user-row">
+                        <span className="cs-live-dot" />
+                        <span style={{ color: '#E2E8F0', fontSize: 12 }}>{user.username || user.email}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </aside>
       </div>
