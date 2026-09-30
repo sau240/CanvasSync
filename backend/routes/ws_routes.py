@@ -20,7 +20,18 @@ from routes.room_routes import _call_room_management, _personal_room_id
 
 ws_router = APIRouter()
 
-VALID_OPERATION_TYPES = {"CREATE", "UPDATE", "DELETE", "CLEAR", "REORDER"}
+VALID_OPERATION_TYPES = {
+    "CREATE",
+    "UPDATE",
+    "DELETE",
+    "CLEAR",
+    "REORDER",
+    "PAGE_CREATE",
+    "PAGE_UPDATE",
+    "PAGE_DELETE",
+    "PAGE_REORDER",
+    "PAGES_SYNC",
+}
 
 
 async def _fetch_user_public(db: AsyncSession, user_id: int) -> dict:

@@ -29,111 +29,117 @@ export default function RegisterForm() {
 
     try {
       await register({ username, email, password });
-      navigate('/dashboard'); // Redirect to dashboard after successful signup
+      navigate('/dashboard');
     } catch {
-      // API error state is handled directly by useAuthStore (apiError)
+      // Handled by auth store
     }
   };
 
   return (
-    <div className="cs-split">
-      <div className="cs-hero">
-        <span className="cs-wordmark">
-          <span className="cs-dot" />
-          CanvasSync
-        </span>
-
-        <div className="cs-hero-copy">
-          <h1>Every idea starts as a scribble.</h1>
-          <p>Create an account, open a room, and hand the link to whoever you're building this with.</p>
-        </div>
-
-        <svg
-          className="cs-hero-sketch"
-          width="220"
-          height="120"
-          viewBox="0 0 220 120"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-hidden="true"
-        >
-          <rect x="24" y="54" width="46" height="46" rx="3" stroke="#8A93A0" strokeWidth="2" />
-          <rect x="90" y="20" width="46" height="46" rx="3" stroke="#3654F4" strokeWidth="2" />
-          <line x1="70" y1="77" x2="90" y2="43" stroke="#C6CDDB" strokeWidth="2" strokeLinecap="round" />
-          <circle cx="182" cy="60" r="4" fill="#3654F4" />
-          <circle cx="150" cy="95" r="4" fill="#8A93A0" />
-        </svg>
+    <div className="cs-auth-shell">
+      {/* Ambient background glow mesh */}
+      <div className="cs-bento-bg-mesh">
+        <div className="cs-mesh-orb cs-orb-1" style={{ width: 520, height: 520, top: '-10%', left: '-5%' }} />
+        <div className="cs-mesh-orb cs-orb-2" style={{ width: 480, height: 480, bottom: '-10%', right: '-5%' }} />
       </div>
 
-      <div className="cs-form-side">
-        <div className="cs-form-card">
-          <h2>Create your account</h2>
-          <p className="cs-form-sub">Takes a minute. No credit card, no waiting on an invite.</p>
+      <div className="cs-auth-card">
+        {/* Brand Header */}
+        <div className="cs-auth-brand">
+          <div className="cs-brand-icon" style={{ margin: '0 auto 12px' }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <rect x="3" y="3" width="7" height="7" rx="2" fill="#3B82F6" />
+              <rect x="14" y="3" width="7" height="7" rx="2" fill="#8B5CF6" />
+              <rect x="3" y="14" width="7" height="7" rx="2" fill="#10B981" />
+              <rect x="14" y="14" width="7" height="7" rx="2" fill="#F59E0B" />
+            </svg>
+          </div>
+          <h1 className="cs-auth-title">Create your studio account</h1>
+          <p className="cs-auth-subtitle">Start collaborating in real-time in seconds</p>
+        </div>
 
-          {(validationError || apiError) && (
-            <div className="cs-error">{validationError || apiError}</div>
-          )}
+        {(validationError || apiError) && (
+          <div className="cs-error" style={{ marginBottom: 16 }}>
+            {validationError || apiError}
+          </div>
+        )}
 
-          <form onSubmit={handleSubmit} noValidate>
-            <div className="cs-field">
-              <label htmlFor="username">Username</label>
-              <input
-                id="username"
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                required
-                placeholder="How your teammates will see you"
-                autoComplete="username"
-              />
-            </div>
+        <form onSubmit={handleSubmit} noValidate className="cs-auth-form">
+          <div className="cs-field">
+            <label htmlFor="username">Username</label>
+            <input
+              id="username"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+              placeholder="alex_designer"
+              autoComplete="username"
+              className="cs-auth-input"
+            />
+          </div>
 
-            <div className="cs-field">
-              <label htmlFor="email">Email</label>
-              <input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                placeholder="you@studio.com"
-                autoComplete="email"
-              />
-            </div>
+          <div className="cs-field">
+            <label htmlFor="email">Work Email</label>
+            <input
+              id="email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              placeholder="you@studio.com"
+              autoComplete="email"
+              className="cs-auth-input"
+            />
+          </div>
 
-            <div className="cs-field">
-              <label htmlFor="password">Password</label>
-              <input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                placeholder="At least 6 characters"
-                autoComplete="new-password"
-              />
-            </div>
+          <div className="cs-field">
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              placeholder="At least 6 characters"
+              autoComplete="new-password"
+              className="cs-auth-input"
+            />
+          </div>
 
-            <div className="cs-field">
-              <label htmlFor="confirmPassword">Confirm password</label>
-              <input
-                id="confirmPassword"
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                required
-                placeholder="Type it again"
-                autoComplete="new-password"
-              />
-            </div>
+          <div className="cs-field">
+            <label htmlFor="confirmPassword">Confirm Password</label>
+            <input
+              id="confirmPassword"
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              required
+              placeholder="Re-enter password"
+              autoComplete="new-password"
+              className="cs-auth-input"
+            />
+          </div>
 
-            <button type="submit" className="cs-btn cs-btn-primary" disabled={isLoading}>
-              {isLoading ? 'Creating account…' : 'Sign up'}
-            </button>
-          </form>
+          <button
+            type="submit"
+            className="cs-bento-primary-btn cs-auth-submit-btn"
+            disabled={isLoading}
+          >
+            {isLoading ? (
+              <>
+                <span className="cs-spinner-sm" />
+                <span>Creating account…</span>
+              </>
+            ) : (
+              <span>Get Started Free &rarr;</span>
+            )}
+          </button>
+        </form>
 
-          <p className="cs-form-foot">
-            Already have an account? <Link to="/login">Sign in</Link>
+        <div className="cs-auth-footer">
+          <p>
+            Already have an account? <Link to="/login" className="cs-auth-link">Sign in</Link>
           </p>
         </div>
       </div>

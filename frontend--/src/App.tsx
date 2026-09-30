@@ -12,4 +12,4 @@ export default function App() {
   }, [initAuth]);
 
   return <RouterProvider router={router} />;
-}
+}   

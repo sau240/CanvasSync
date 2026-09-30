@@ -19,6 +19,8 @@ class RoomConnectionManager:
         self._user_info: Dict[str, Dict[WebSocket, dict]] = defaultdict(dict)
         # Per-room canvas shapes snapshot for isolated room state
         self._room_shapes: Dict[str, List[dict]] = defaultdict(list)
+        # Per-room canvas pages snapshot (artboards)
+        self._room_pages: Dict[str, List[dict]] = defaultdict(list)
 
     def get_room_shapes(self, room_id: str) -> List[dict]:
         """Returns the current canvas shapes for a specific room."""
@@ -27,6 +29,14 @@ class RoomConnectionManager:
     def set_room_shapes(self, room_id: str, shapes: List[dict]) -> None:
         """Sets the entire canvas shapes list for a room."""
         self._room_shapes[room_id] = list(shapes)
+
+    def get_room_pages(self, room_id: str) -> List[dict]:
+        """Returns the current canvas pages for a specific room."""
+        return list(self._room_pages.get(room_id, []))
+
+    def set_room_pages(self, room_id: str, pages: List[dict]) -> None:
+        """Sets the entire canvas pages list for a room."""
+        self._room_pages[room_id] = list(pages)
 
     def apply_canvas_operation(self, room_id: str, operation: dict) -> None:
         """Applies a real-time canvas operation to the room's isolated state."""
@@ -67,6 +77,35 @@ class RoomConnectionManager:
             reordered_shapes = operation.get("shapes")
             if isinstance(reordered_shapes, list):
                 self._room_shapes[room_id] = list(reordered_shapes)
+
+        elif op_type == "PAGE_CREATE":
+            page = operation.get("page")
+            if page and isinstance(page, dict):
+                pages = self._room_pages[room_id]
+                pages = [p for p in pages if p.get("id") != page.get("id")]
+                pages.append(page)
+                self._room_pages[room_id] = pages
+
+        elif op_type == "PAGE_UPDATE":
+            page = operation.get("page")
+            if page and isinstance(page, dict):
+                target_id = page.get("id")
+                pages = self._room_pages[room_id]
+                for idx, p in enumerate(pages):
+                    if p.get("id") == target_id:
+                        pages[idx] = {**p, **page}
+                        break
+                self._room_pages[room_id] = pages
+
+        elif op_type == "PAGE_DELETE":
+            target_id = operation.get("id")
+            if target_id:
+                self._room_pages[room_id] = [p for p in self._room_pages[room_id] if p.get("id") != target_id]
+
+        elif op_type in ("PAGE_REORDER", "PAGES_SYNC"):
+            pages = operation.get("pages")
+            if isinstance(pages, list):
+                self._room_pages[room_id] = list(pages)
 
     async def connect(self, room_id: str, websocket: WebSocket, user_info: dict) -> None:
         """Registers an already-accepted socket connection and its display

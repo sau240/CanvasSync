@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { roomsApi } from '../api/rooms.api';
 import ProfileDrawer from '../components/ProfileDrawer';
@@ -128,6 +128,27 @@ export default function DashboardPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'all' | 'owned' | 'shared'>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleDocClick = (e: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setIsSearchFocused(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsSearchFocused(false);
+      }
+    };
+    document.addEventListener('mousedown', handleDocClick);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleDocClick);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const copyRoomId = (e: React.MouseEvent, id: string) => {
@@ -175,6 +196,21 @@ export default function DashboardPage() {
 
   const totalBoardsCount = ownedRooms.length + sharedRooms.length + (personalWorkspace ? 1 : 0);
 
+  const allRoomsList = [
+    ...(personalWorkspace ? [personalWorkspace] : []),
+    ...ownedRooms,
+    ...sharedRooms,
+  ];
+
+  const allMatchingRooms = q
+    ? allRoomsList.filter(
+        (r) =>
+          r.room_title.toLowerCase().includes(q) ||
+          r.room_id.toLowerCase().includes(q) ||
+          (r.owner_username && r.owner_username.toLowerCase().includes(q))
+      )
+    : [];
+
   return (
     <div className="cs-bento-shell">
       {/* Profile & Settings Sliding Drawer (50%–75% width) */}
@@ -205,7 +241,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Search bar with Keyboard Shortcut badge */}
-          <div className="cs-bento-search">
+          <div className="cs-bento-search" ref={searchRef}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="11" cy="11" r="8" />
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -214,14 +250,98 @@ export default function DashboardPage() {
               type="text"
               placeholder="Search boards, templates & rooms…"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => setIsSearchFocused(true)}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setIsSearchFocused(true);
+              }}
             />
             {searchQuery ? (
-              <button type="button" onClick={() => setSearchQuery('')} className="cs-search-clear">
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setIsSearchFocused(false);
+                }}
+                className="cs-search-clear"
+              >
                 ✕
               </button>
             ) : (
               <span className="cs-search-shortcut">⌘K</span>
+            )}
+
+            {/* Google-Style Floating Autocomplete Dropdown under Search Bar */}
+            {searchQuery.trim() && isSearchFocused && (
+              <div className="cs-search-floating-dropdown" onMouseDown={(e) => e.stopPropagation()}>
+                <div className="cs-search-dropdown-header">
+                  <span className="cs-search-dropdown-title">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    Matching Rooms ({allMatchingRooms.length})
+                  </span>
+                  <span className="cs-search-dropdown-hint">Press ESC to close</span>
+                </div>
+
+                {allMatchingRooms.length > 0 ? (
+                  <>
+                    <div className="cs-search-dropdown-strip">
+                      {allMatchingRooms.map((room) => (
+                        <button
+                          key={room.room_id}
+                          type="button"
+                          className="cs-strip-room-chip"
+                          onClick={() => {
+                            setIsSearchFocused(false);
+                            openRoom(room.room_id);
+                          }}
+                          title={`Open ${room.room_title || 'Room'}`}
+                        >
+                          <span className="cs-chip-icon">
+                            {personalWorkspace?.room_id === room.room_id ? '🔒' : '🎨'}
+                          </span>
+                          <span className="cs-chip-title">{room.room_title || 'Untitled Room'}</span>
+                          <span className="cs-chip-arrow">→</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="cs-search-dropdown-list">
+                      {allMatchingRooms.slice(0, 5).map((room) => (
+                        <div
+                          key={room.room_id}
+                          className="cs-search-suggestion-item"
+                          onClick={() => {
+                            setIsSearchFocused(false);
+                            openRoom(room.room_id);
+                          }}
+                        >
+                          <div className="cs-suggestion-left">
+                            <div className="cs-suggestion-icon">
+                              {personalWorkspace?.room_id === room.room_id ? '🔒' : '🎨'}
+                            </div>
+                            <div className="cs-suggestion-info">
+                              <div className="cs-suggestion-title">{room.room_title || 'Untitled Room'}</div>
+                              <div className="cs-suggestion-sub">
+                                {personalWorkspace?.room_id === room.room_id
+                                  ? 'Personal Workspace'
+                                  : `Host: ${room.owner_username || 'You'}`}
+                              </div>
+                            </div>
+                          </div>
+                          <span className="cs-suggestion-jump">Open ↵</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="cs-search-dropdown-empty">
+                    <span>No rooms found matching "<strong>{searchQuery}</strong>"</span>
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
@@ -282,7 +402,7 @@ export default function DashboardPage() {
                     Where imagination becomes <span className="cs-gradient-text">vector reality.</span>
                   </h1>
                   <p className="cs-hero-desc">
-                    Design infinite flowcharts, UI wireframes, system diagrams, and brainstorms with your team in ultra-responsive 60 FPS real-time sync.
+                    Design infinite flowcharts, UI wireframes, system diagrams, and brainstorms with your team in ultra-responsive real-time sync.
                   </p>
 
                   <div className="cs-hero-action-buttons">
@@ -361,7 +481,7 @@ export default function DashboardPage() {
                 <div className="cs-tile-head">
                   <span className="cs-tile-label">Live Workspace Pulse</span>
                   <span className="cs-live-pill">
-                    <span className="cs-pulse-dot-green" /> 60 FPS Sync
+                    <span className="cs-pulse-dot-green" /> Live Sync
                   </span>
                 </div>
 
@@ -470,6 +590,42 @@ export default function DashboardPage() {
 
             {/* Tile 4: Workspace Boards Hub */}
             <section className="cs-boards-section">
+              {/* Search Matching Rooms Horizontal Quick-Jump Strip */}
+              {q && (
+                <div className="cs-search-horizontal-strip">
+                  <div className="cs-strip-title-row">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="11" cy="11" r="8" />
+                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                      </svg>
+                      <span className="cs-strip-label">Matching Rooms & Workspaces:</span>
+                    </div>
+                    <span className="cs-strip-badge">{allMatchingRooms.length} room{allMatchingRooms.length !== 1 ? 's' : ''} found</span>
+                  </div>
+
+                  {allMatchingRooms.length === 0 ? (
+                    <div className="cs-strip-empty">No rooms found matching "{searchQuery}"</div>
+                  ) : (
+                    <div className="cs-strip-scroll-row">
+                      {allMatchingRooms.map((room) => (
+                        <button
+                          key={room.room_id}
+                          type="button"
+                          className="cs-strip-room-chip"
+                          onClick={() => openRoom(room.room_id)}
+                          title={`Click to open ${room.room_title} directly`}
+                        >
+                          <span className="cs-strip-chip-dot" />
+                          <span className="cs-strip-chip-name">{room.room_title}</span>
+                          <span className="cs-strip-chip-arrow">&rarr;</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="cs-dash-toolbar">
                 <div className="cs-tab-pills">
                   <button
