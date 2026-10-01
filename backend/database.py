@@ -5,7 +5,7 @@ from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
-load_dotenv()
+load_dotenv(dotenv_path=".env", override=True)
 
 DB_USER = os.getenv("DATABASE_USER", "root")
 DB_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
@@ -18,6 +18,9 @@ DB_SSL = os.getenv("DATABASE_SSL", "").strip().lower()
 raw_database_url = os.getenv("DATABASE_URL")
 
 if raw_database_url:
+    # Remove unsupported 'ssl-mode' query param that aiomysql does not accept
+    if "ssl-mode=REQUIRED" in raw_database_url:
+        raw_database_url = raw_database_url.replace("ssl-mode=REQUIRED", "ssl=true")
     if raw_database_url.startswith("mysql://"):
         DATABASE_URL = raw_database_url.replace("mysql://", "mysql+aiomysql://", 1)
     elif raw_database_url.startswith("mysql+pymysql://"):
@@ -53,7 +56,7 @@ engine = create_async_engine(
     pool_recycle=300,
     connect_args=connect_args,
 )
-
+print("DB URL in use:", engine.url.render_as_string(hide_password=True))
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,

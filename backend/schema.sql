@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     age INT DEFAULT NULL,
     designation VARCHAR(100) DEFAULT 'Member',
+    is_active BOOLEAN DEFAULT TRUE,
     is_deleted BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -75,6 +76,36 @@ CREATE TABLE IF NOT EXISTS sync_change_logs (
 -- =============================================================================
 
 DELIMITER //
+
+-- Stored Procedure: sp_manage_user
+DROP PROCEDURE IF EXISTS sp_manage_user //
+CREATE PROCEDURE sp_manage_user(
+    IN p_op VARCHAR(30),
+    IN p_uid INT,
+    IN p_username VARCHAR(100),
+    IN p_email VARCHAR(255),
+    IN p_pwd VARCHAR(255)
+)
+BEGIN
+    IF p_op = 'REGISTER' THEN
+        INSERT INTO users (username, email, password_hash, is_active, is_deleted)
+        VALUES (p_username, p_email, p_pwd, TRUE, FALSE);
+        
+        SELECT id, username, email, is_active FROM users WHERE id = LAST_INSERT_ID();
+
+    ELSEIF p_op = 'GET_BY_EMAIL' THEN
+        SELECT id, username, email, password_hash, is_active, designation
+        FROM users
+        WHERE email = p_email AND is_deleted = FALSE
+        LIMIT 1;
+
+    ELSEIF p_op = 'GET_BY_ID' THEN
+        SELECT id, username, email, is_active, age, designation
+        FROM users
+        WHERE id = p_uid AND is_deleted = FALSE
+        LIMIT 1;
+    END IF;
+END //
 
 -- Stored Procedure: sp_room_management
 DROP PROCEDURE IF EXISTS sp_room_management //
