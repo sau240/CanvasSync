@@ -45,6 +45,12 @@
 
 CanvasSync/ ├── backend/ # FastAPI REST & WebSocket Backend │ ├── middleware/ # JWT Auth & Security Interceptors │ ├── routes/ # Auth, Rooms, Permissions, Sync, and WebSocket Routers │ ├── models/ # Database Schemas & Models │ ├── database.py # MySQL / Database Connection Pooling │ └── main.py # App Entrypoint & CORS Configuration │ └── frontend--/ # React + Vite Frontend ├── src/ │ ├── api/ # Axios HTTP Clients │ ├── components/ # Reusable UI Modules & Drawers │ ├── pages/ # Canvas Studio, Dashboard, Auth & Settings │ ├── store/ # State Management (Zustand) │ ├── styles/ # Glassmorphic Theme & Design Tokens │ └── types/ # TypeScript Interfaces & Contracts
 
+<img width="1024" height="452" alt="image" src="https://github.com/user-attachments/assets/b29e983d-b800-4560-8037-1cb3840925d9" />
+<img width="1023" height="469" alt="image" src="https://github.com/user-attachments/assets/e9966b55-4c13-43d5-be89-515dcf47779f" />
+<img width="1024" height="459" alt="image" src="https://github.com/user-attachments/assets/df2f9f93-9f90-4c90-a56d-a41743fa7058" />
+<img width="1024" height="576" alt="image" src="https://github.com/user-attachments/assets/85d69d55-8454-4092-b6ac-e5d36e53ab29" />
+<img width="1024" height="576" alt="image" src="https://github.com/user-attachments/assets/40dc5b7e-ea22-453e-b7d0-6d7329d34e6b" />
+
 
 
 ### 💻 Technologies
