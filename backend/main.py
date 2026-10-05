@@ -80,6 +80,8 @@ raw_origins = os.getenv("CORS_ORIGINS", "")
 custom_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
 
 ALLOWED_ORIGINS = custom_origins or [
+    "https://canvas-sync-one.vercel.app",
+    "https://canvassync-l565.onrender.com",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
