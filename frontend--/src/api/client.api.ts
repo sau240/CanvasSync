@@ -1,14 +1,20 @@
 import axios, { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
 import { tokenStorage } from '../utils/token_storage';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
+// 1. Point default fallback directly to Render production backend with /api/v1
+const rawBase = import.meta.env.VITE_API_BASE_URL || 'https://canvassync-l565.onrender.com/api/v1';
+
+// 2. Ensure /api/v1 is appended exactly once regardless of how Vercel env is formatted
+const API_BASE_URL = rawBase.endsWith('/api/v1')
+  ? rawBase
+  : `${rawBase.replace(/\/$/, '')}/api/v1`;
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 10000, // 10 seconds timeout
+  timeout: 15000,
 });
 
 apiClient.interceptors.request.use(
