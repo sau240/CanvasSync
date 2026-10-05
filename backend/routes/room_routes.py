@@ -42,24 +42,84 @@ async def _call_room_management(
     capacity: Optional[int] = None,
     limit: Optional[int] = None,
 ):
-    """sp_room_management(op, room_id VARCHAR(36), owner_id, room_title,
-    capacity, limit) -- matching the real `rooms` table (room_id is a
-    UUID string PK, not an auto-increment INT; there's no
-    room_description column, but capacity/active_users are real)."""
-    return await db.execute(
-        text(
-            "CALL sp_room_management(:op, :room_id, :owner_id, :room_title, "
-            ":capacity, :limit)"
-        ),
-        {
-            "op": op,
-            "room_id": room_id,
-            "owner_id": owner_id,
-            "room_title": room_title,
-            "capacity": capacity,
-            "limit": limit,
-        },
-    )
+    """Plain-SQL replacement for the missing sp_room_management procedure."""
+
+    if op == "GET_BY_ID":
+        return await db.execute(
+            text("SELECT * FROM rooms WHERE room_id = :room_id AND is_deleted = FALSE LIMIT 1"),
+            {"room_id": room_id},
+        )
+
+    if op == "GET_BY_OWNER":
+        return await db.execute(
+            text("SELECT * FROM rooms WHERE owner_id = :owner_id AND is_deleted = FALSE"),
+            {"owner_id": owner_id},
+        )
+
+    if op == "CREATE":
+        await db.execute(
+            text(
+                "INSERT INTO rooms (room_id, room_title, owner_id, capacity, active_users, is_deleted, created_at) "
+                "VALUES (:room_id, :room_title, :owner_id, :capacity, 0, FALSE, NOW())"
+            ),
+            {
+                "room_id": room_id,
+                "room_title": room_title or "Untitled Room",
+                "owner_id": owner_id,
+                "capacity": capacity or 10,
+            },
+        )
+        return await db.execute(
+            text("SELECT * FROM rooms WHERE room_id = :room_id LIMIT 1"),
+            {"room_id": room_id},
+        )
+
+    if op == "UPDATE":
+        sets = []
+        params: dict = {"room_id": room_id}
+        if room_title is not None:
+            sets.append("room_title = :room_title")
+            params["room_title"] = room_title
+        if capacity is not None:
+            sets.append("capacity = :capacity")
+            params["capacity"] = capacity
+        if sets:
+            await db.execute(
+                text(f"UPDATE rooms SET {', '.join(sets)} WHERE room_id = :room_id"),
+                params,
+            )
+        return await db.execute(
+            text("SELECT * FROM rooms WHERE room_id = :room_id LIMIT 1"),
+            {"room_id": room_id},
+        )
+
+    if op == "DELETE":
+        return await db.execute(
+            text("UPDATE rooms SET is_deleted = TRUE WHERE room_id = :room_id AND owner_id = :owner_id"),
+            {"room_id": room_id, "owner_id": owner_id},
+        )
+
+    if op == "JOIN":
+        await db.execute(
+            text("UPDATE rooms SET active_users = active_users + 1 WHERE room_id = :room_id AND active_users < capacity"),
+            {"room_id": room_id},
+        )
+        return await db.execute(
+            text("SELECT * FROM rooms WHERE room_id = :room_id LIMIT 1"),
+            {"room_id": room_id},
+        )
+
+    if op == "LEAVE":
+        await db.execute(
+            text("UPDATE rooms SET active_users = GREATEST(0, active_users - 1) WHERE room_id = :room_id"),
+            {"room_id": room_id},
+        )
+        return await db.execute(
+            text("SELECT * FROM rooms WHERE room_id = :room_id LIMIT 1"),
+            {"room_id": room_id},
+        )
+
+    raise HTTPException(status_code=400, detail=f"Unknown room op: {op}")
 
 
 @router.get("/personal", status_code=status.HTTP_200_OK)
@@ -126,10 +186,10 @@ async def list_my_rooms(
     shared_result = await db.execute(
         text(
             "SELECT r.room_id, r.room_title, r.owner_id, r.capacity, "
-            "r.active_users, r.created_at, r.updated_at "
+            "r.active_users, r.created_at "
             "FROM rooms r "
             "INNER JOIN rooms_permission rp ON r.room_id = rp.room_id "
-            "WHERE rp.user_id = :user_id"
+            "WHERE rp.user_id = :user_id AND r.is_deleted = FALSE"
         ),
         {"user_id": user_id},
     )
@@ -161,8 +221,8 @@ async def get_room(
 
     # Attach the owner's username so the frontend can show "Created by X"
     owner_result = await db.execute(
-        text("CALL sp_manage_user(:op, :uid, :username, :email, :pwd)"),
-        {"op": "GET_BY_ID", "uid": room["owner_id"], "username": None, "email": None, "pwd": None},
+        text("SELECT id, username FROM users WHERE id = :uid AND is_deleted = FALSE LIMIT 1"),
+        {"uid": room["owner_id"]},
     )
     owner_row = owner_result.mappings().first()
     if owner_row:

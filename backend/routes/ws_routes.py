@@ -35,11 +35,13 @@ VALID_OPERATION_TYPES = {
 
 
 async def _fetch_user_public(db: AsyncSession, user_id: int) -> dict:
-    """Display info for the room-presence list, via the same
-    sp_manage_user('GET_BY_ID', ...) op GET /auth/me already uses."""
+    """Display info for the room-presence list."""
     result = await db.execute(
-        text("CALL sp_manage_user(:op, :uid, :username, :email, :pwd)"),
-        {"op": "GET_BY_ID", "uid": user_id, "username": None, "email": None, "pwd": None},
+        text(
+            "SELECT id, username, email FROM users "
+            "WHERE id = :uid AND is_deleted = FALSE LIMIT 1"
+        ),
+        {"uid": user_id},
     )
     row = result.mappings().first()
     if row is None:

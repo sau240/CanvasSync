@@ -176,8 +176,8 @@ async def list_room_permissions(
 
     # Also include the owner at the top so collaborators see who owns the room.
     owner_user = await db.execute(
-        text("CALL sp_manage_user(:op, :uid, :username, :email, :pwd)"),
-        {"op": "GET_BY_ID", "uid": room["owner_id"], "username": None, "email": None, "pwd": None},
+        text("SELECT id, username, email FROM users WHERE id = :uid AND is_deleted = FALSE LIMIT 1"),
+        {"uid": room["owner_id"]},
     )
     owner_row = owner_user.mappings().first()
     if owner_row:

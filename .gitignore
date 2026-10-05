@@ -33,7 +33,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# Environment & Secrets (Never commit credentials)
+# Environment & Secrets (.....Never commit credentials)
 .env
 .env.*
 !.env.example

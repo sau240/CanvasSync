@@ -65,33 +65,75 @@ async def register(
     body: RegisterRequest,
     db: AsyncSession = Depends(db_connect),
 ):
-    """Registers a new user by calling sp_manage_user('REGISTER', ...)."""
+    """Registers a new user directly via SQL INSERT."""
     hashed_password = hash_password(body.password)
 
     try:
-        result = await db.execute(
-            text("CALL sp_manage_user(:op, :uid, :username, :email, :pwd)"),
+        # Check if email already exists
+        existing = await db.execute(
+            text("SELECT id FROM users WHERE email = :email LIMIT 1"),
+            {"email": body.email},
+        )
+        if existing.mappings().first():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered",
+            )
+
+        # Check if username already exists
+        existing_user = await db.execute(
+            text("SELECT id FROM users WHERE username = :username LIMIT 1"),
+            {"username": body.username},
+        )
+        if existing_user.mappings().first():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username already taken",
+            )
+
+        # Insert the new user
+        await db.execute(
+            text(
+                "INSERT INTO users "
+                "(username, email, hashed_password, role, token_version, auth_provider, leave_balance, is_active, is_deleted, created_at) "
+                "VALUES (:username, :email, :pwd, 'user', 0, 'local', 0, TRUE, FALSE, NOW())"
+            ),
             {
-                "op": "REGISTER",
-                "uid": None,
                 "username": body.username,
                 "email": body.email,
                 "pwd": hashed_password,
             },
         )
-        row = result.mappings().first()
         await db.commit()
+
+        # Fetch the newly created user
+        result = await db.execute(
+            text("SELECT id, username, email, is_active FROM users WHERE email = :email LIMIT 1"),
+            {"email": body.email},
+        )
+        row = result.mappings().first()
+
+    except HTTPException:
+        raise
     except DBAPIError as e:
         await db.rollback()
-        if "Email already registered" in str(e.orig):
+        err_str = str(e.orig) if e.orig else str(e)
+        logger.error(f"Registration failed for {body.email}: {e}")
+        if "Duplicate entry" in err_str:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered",
+                detail="Email or username already registered",
             )
-        logger.error(f"Registration failed for {body.email}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not register user",
+            detail=f"DB error during registration: {err_str}",
+        )
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Unexpected registration error for {body.email}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error during registration: {str(e)}",
         )
 
     if row is None:
@@ -129,22 +171,33 @@ async def login(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    result = await db.execute(
-        text("CALL sp_manage_user(:op, :uid, :username, :email, :pwd)"),
-        {
-            "op": "GET_BY_EMAIL",
-            "uid": None,
-            "username": None,
-            "email": body.email,
-            "pwd": None,
-        },
-    )
-    user = result.mappings().first()
+    try:
+        result = await db.execute(
+            text(
+                "SELECT id, username, email, hashed_password, is_active "
+                "FROM users WHERE email = :email AND is_deleted = FALSE LIMIT 1"
+            ),
+            {"email": body.email},
+        )
+        user = result.mappings().first()
+    except DBAPIError as e:
+        err_str = str(e.orig) if e.orig else str(e)
+        logger.error(f"Login DB error for {body.email}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"DB error during login: {err_str}",
+        )
+    except Exception as e:
+        logger.error(f"Unexpected login error for {body.email}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error during login: {str(e)}",
+        )
 
     if user is None:
         raise credentials_exception
 
-    if not verify_password(body.password, user["password_hash"]):
+    if not verify_password(body.password, user["hashed_password"]):
         raise credentials_exception
 
     if not user["is_active"]:
@@ -205,14 +258,11 @@ async def get_me(
     the Authorization header. authStore.initAuth() calls this on every page
     load to confirm the stored token is still valid and restore the session."""
     result = await db.execute(
-        text("CALL sp_manage_user(:op, :uid, :username, :email, :pwd)"),
-        {
-            "op": "GET_BY_ID",
-            "uid": int(current_user["user_id"]),
-            "username": None,
-            "email": None,
-            "pwd": None,
-        },
+        text(
+            "SELECT id, username, email, is_active, age, designation "
+            "FROM users WHERE id = :uid AND is_deleted = FALSE LIMIT 1"
+        ),
+        {"uid": int(current_user["user_id"])},
     )
     user = result.mappings().first()
 
